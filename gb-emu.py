@@ -1,9 +1,14 @@
 import pygame
 
 # made by las-r on github
-# v0.2.1
+# v0.3
 
 # unfinished!!! not functional yet
+
+# to do:
+# finish interrupting instructions
+# fix inc and dev instructions
+# make the actual instruction-running loop
 
 # pygame init
 pygame.init()
@@ -95,6 +100,19 @@ def fetch8():
     pc += 1
     return val
 
+# stack functions
+def pop16():
+    global sp
+    low = mem[sp]
+    high = mem[sp + 1]
+    sp += 2
+    return (high << 8) | low
+def push16(val):
+    global sp
+    sp -= 2
+    mem[sp] = val & 0xFF
+    mem[sp + 1] = (val >> 8) & 0xFF
+
 # flag functions
 def setFlag(mask):
     global f
@@ -170,6 +188,14 @@ def cp(num):
     updFlag(0x80, (result & 0xff) == 0)
     updFlag(0x20, (a & 0x0f) < (num & 0x0f))
     updFlag(0x10, a < num)
+def addsp(num):
+    global sp
+    result = sp + num
+    clrFlag(0x40)
+    updFlag(0x80, (result & 0xff) == 0)
+    updFlag(0x20, ((a & 0x0f) + (num & 0x0f)) > 0x0f)
+    updFlag(0x10, result > 0xff)
+    sp = result & 0xff
 
 # execute opcode function
 def execOpc(opcode):
@@ -461,24 +487,6 @@ def execOpc(opcode):
                 case 15: xor(a)
         case 11:
             match o1:
-                case 0: and_(b)
-                case 1: and_(c)
-                case 2: and_(d)
-                case 3: and_(e)
-                case 4: and_(h)
-                case 5: and_(l)
-                case 6: and_(mem[gethl()])
-                case 7: and_(a)
-                case 8: xor(b)
-                case 9: xor(c)
-                case 10: xor(d)
-                case 11: xor(e)
-                case 12: xor(h)
-                case 13: xor(l)
-                case 14: xor(mem[gethl()])
-                case 15: xor(a)
-        case 12:
-            match o1:
                 case 0: or_(b)
                 case 1: or_(c)
                 case 2: or_(d)
@@ -495,7 +503,116 @@ def execOpc(opcode):
                 case 13: cp(l)
                 case 14: cp(mem[gethl()])
                 case 15: cp(a)
-                    
+        case 12:
+            match o1:
+                case 0: 
+                    if not isFlag(0x80):
+                        pc = pop16()
+                case 1: setbc(pop16())
+                case 2:
+                    if not isFlag(0x80):
+                        pc = fetch16()
+                case 3: pc = fetch16()
+                case 4:
+                    if not isFlag(0x80):
+                        push16(pc)
+                        pc = addr
+                case 5: push16(getbc())
+                case 6: add(fetch8())
+                case 7:
+                    push16(pc)
+                    pc = 0
+                case 8:
+                    if isFlag(0x80):
+                        pc = pop16()
+                case 9: pc = pop16()
+                case 10:
+                    if isFlag(0x80):
+                        pc = fetch16()
+                case 11: pass # implement later
+                case 12:
+                    if isFlag(0x80):
+                        push16(pc)
+                        pc = fetch16()
+                case 13:
+                    push16(pc)
+                    pc = fetch16()
+                case 14: adc(fetch8())
+                case 15:
+                    push16(pc)
+                    pc = 1
+        case 13:
+            match o1:
+                case 0: 
+                    if not isFlag(0x01):
+                        pc = pop16()
+                case 1: setde(pop16())
+                case 2:
+                    if not isFlag(0x01):
+                        pc = fetch16()
+                case 4:
+                    if not isFlag(0x01):
+                        push16(pc)
+                        pc = addr
+                case 5: push16(getde())
+                case 6: sub(fetch8())
+                case 7:
+                    push16(pc)
+                    pc = 2
+                case 8:
+                    if isFlag(0x01):
+                        pc = pop16()
+                case 9: pass # implement later
+                case 10:
+                    if isFlag(0x01):
+                        pc = fetch16()
+                case 12:
+                    if isFlag(0x01):
+                        push16(pc)
+                        pc = fetch16()
+                case 14: sbc(fetch8())
+                case 15:
+                    push16(pc)
+                    pc = 3
+        case 14:
+            match o1:
+                case 0: mem[fetch8()] = a
+                case 1: sethl(pop16())
+                case 2: mem[c] = a
+                case 5: push16(gethl())
+                case 6: and_(fetch8())
+                case 7:
+                    push16(pc)
+                    pc = 4
+                case 8: addsp(fetch8())
+                case 9: pc = gethl()
+                case 10: mem[fetch16()] = a
+                case 14: xor(fetch8())
+                case 15:
+                    push16(pc)
+                    pc = 5
+        case 15:
+            match o1:
+                case 0: a = mem[fetch8()]
+                case 1: setaf(pop16())
+                case 2: a = mem[c]
+                case 3: pass # implement later
+                case 5: push16(getaf())
+                case 6: or_(fetch8())
+                case 7:
+                    push16(pc)
+                    pc = 6
+                case 8:
+                    addsp(fetch8())
+                    sethl(sp)
+                case 9: sp = gethl()
+                case 10: a = fetch16()
+                case 11: pass # implement later
+                case 14: cp(fetch8())
+                case 15:
+                    push16(pc)
+                    pc = 7
+    
     # increment pc
     pc += 1
 
