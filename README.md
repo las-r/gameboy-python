@@ -1,2 +1,5 @@
 # Game Boy Python
-A Nintendo Game Boy emulator written in Python
+A Nintendo Game Boy emulator written in Python.
+
+## Usage
+TBD.
