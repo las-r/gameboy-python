@@ -6,8 +6,7 @@ import pygame
 # unfinished!!! not functional yet
 
 # to do:
-# finish interrupting instructions
-# make the actual instruction-running loop
+# graphics
 
 # pygame init
 pygame.init()
@@ -27,7 +26,8 @@ PALETTE = [(42, 69, 59),
 disp = [[0 for _ in range(SWIDTH)] for _ in range(SHEIGHT)]
 
 # cpu
-MC = 4194304
+stopped = False
+MC = 120
 SC = MC // 4
 a = 0
 f = 0
@@ -67,12 +67,126 @@ def sethl(value):
 # memory
 mem = bytearray(0x10000)
 
+# interruption handling
+halted = False
+ime = True
+IF = 0xff0f
+IE = 0xffff
+def hanInter():
+    global ime, pc
+    if not ime:
+        return
+    req = mem[IF]
+    enable = mem[IE]
+    fired = req & enable
+    if fired:
+        for i in range(5):
+            if fired & (1 << i):
+                ime = False
+                halted = False
+                mem[IF] &= ~(1 << i)
+                push16(pc)
+                pc = [0x40, 0x48, 0x50, 0x58, 0x60][i]
+                break
+def reqInter(bit):
+    mem[IF] |= (1 << bit)
+
+# timers
+DIV = 0xff04
+TIMA = 0xff05
+TMA = 0xff06
+TAC = 0xff07
+ic = 0
+prevBit = 0
+def timerTick():
+    global mem, ic, prevBit
+    ic = (ic + 1) & 0xffff
+    mem[DIV] = (ic >> 8) & 0xff
+    if mem[TAC] & 4:
+        curBit = (ic & [1 << 9, 1 << 3, 1 << 5, 1 << 7][mem[TAC] & 3])
+        if prevBit == 1 and curBit == 0:
+            mem[TIMA] += 1
+            if mem[TIMA] > 0xff:
+                mem[TIMA] = mem[TMA]
+                reqInter(2)
+        prevBit = curBit
+    else:
+        prevBit = 0
+    
+# joypad
+JOYP = 0xff00
+jpbuttons = {
+    "a": False,
+    "b": False,
+    "st": False,
+    "sl": False,
+    "u": False,
+    "d": False,
+    "l": False,
+    "r": False,
+}
+def updJoypad():
+    global mem
+    joyp = mem[JOYP] & 0xf0
+    if not (mem[JOYP] & 0x20):
+        joyp |= (
+            (0 if jpbuttons["st"] else 8) |
+            (0 if jpbuttons["sl"] else 4) |
+            (0 if jpbuttons["b"] else 2) |
+            (0 if jpbuttons["a"] else 1)
+        )
+    elif not (mem[JOYP] & 0x10):
+        joyp |= (
+            (0 if jpbuttons["d"] else 8) |
+            (0 if jpbuttons["u"] else 4) |
+            (0 if jpbuttons["l"] else 2) |
+            (0 if jpbuttons["r"] else 1)
+        )
+    else:
+        joyp |= 0x0f
+    mem[JOYP] = joyp
+def getJP(ev):
+    if ev.type == pygame.KEYDOWN:
+        if ev.key == pygame.K_z:
+            jpbuttons["a"] = True
+        elif ev.key == pygame.K_x:
+            jpbuttons["b"] = True
+        elif ev.key == pygame.K_RETURN:
+            jpbuttons["st"] = True
+        elif ev.key in [pygame.K_RSHIFT, pygame.K_BACKSPACE]:
+            jpbuttons["sl"] = True
+        elif ev.key in [pygame.K_UP, pygame.K_w]:
+            jpbuttons["u"] = True
+        elif ev.key == [pygame.K_DOWN, pygame.K_s]:
+            jpbuttons["d"] = True
+        elif ev.key == [pygame.K_LEFT, pygame.K_a]:
+            jpbuttons["l"] = True
+        elif ev.key == [pygame.K_RIGHT, pygame.K_d]:
+            jpbuttons["r"] = True
+    elif ev.type == pygame.KEYUP:
+        if ev.key == pygame.K_z:
+            jpbuttons["a"] = False
+        elif ev.key == pygame.K_x:
+            jpbuttons["b"] = False
+        elif ev.key == pygame.K_RETURN:
+            jpbuttons["st"] = False
+        elif ev.key in [pygame.K_RSHIFT, pygame.K_BACKSPACE]:
+            jpbuttons["sl"] = False
+        elif ev.key == [pygame.K_UP, pygame.K_w]:
+            jpbuttons["u"] = False
+        elif ev.key == [pygame.K_DOWN, pygame.K_d]:
+            jpbuttons["d"] = False
+        elif ev.key == [pygame.K_LEFT, pygame.K_a]:
+            jpbuttons["l"] = False
+        elif ev.key == [pygame.K_RIGHT, pygame.K_d]:
+            jpbuttons["r"] = False
+
 # load rom function
 def loadRom(path):
     global mem
     with open(path, "rb") as f:
         rom = bytearray(f.read())
-    mem[0:0x8000] = rom[:0x8000]
+    mem[:0x8000] = rom[:0x8000]
     
     # print title
     if DEBUG:
@@ -83,7 +197,34 @@ def updScreen():
     for y in range(SHEIGHT):
         for x in range(SWIDTH):
             pygame.draw.rect(screen, PALETTE[disp[y][x]], pygame.Rect(x * PWIDTH, y * PHEIGHT, PWIDTH, PHEIGHT))
-    pygame.display.flip()
+    pygame.display.flip()    
+
+# tile functions
+def getTile(index, base=0x8000):
+    tile = []
+    addr = base + index * 16
+    for row in range(8):
+        low = mem[addr + row * 2]
+        high = mem[addr + row * 2 + 1]
+        pixels = []
+        for bit in range(7, -1, -1):
+            lsb = (low >> bit) & 1
+            msb = (high >> bit) & 1
+            shade = (msb << 1) | lsb
+            pixels.append(shade)
+        tile.append(pixels)
+    return tile
+def renderTiles():
+    for tilei in range(128):
+        tile = getTile(tilei)
+        tx = (tilei % 16) * 8
+        ty = (tilei // 16) * 8
+        for y in range(8):
+            for x in range(8):
+                px = tx + x
+                py = ty + y
+                if px < SWIDTH and py < SHEIGHT:
+                    disp[py][px] = tile[y][x]
 
 # fetch value functions
 def fetch16():
@@ -228,10 +369,12 @@ def srl(val):
     return result
 def swap(val):
     result = ((val & 0x0F) << 4) | ((val & 0xF0) >> 4)
-    setFlag(Z=(result == 0), N=0, H=0, C=0)
+    setFlag(0x80)
+    clrFlag(0x40 | 0x20 | 0x10)
     return result
 def bit(val, n):
     setFlag(Z=((val >> n) & 1) == 0, N=0, H=1)
+    return n
 def res(val, n):
     return val & ~(1 << n)
 def set_(val, n):
@@ -239,7 +382,7 @@ def set_(val, n):
 
 # execute opcode functions
 def execOpc(opcode):
-    global a, f, b, c, d, e, h, l, pc, sp, mem, disp
+    global a, f, b, c, d, e, h, l, pc, sp, mem, disp, ime, halted, stopped
     
     # debug
     if DEBUG:
@@ -281,7 +424,11 @@ def execOpc(opcode):
                     updFlag(0x10, carry == 1)
         case 1:
             match o1:
-                case 0: pass # implement later
+                case 0:
+                    pc += 2
+                    stopped = True
+                    if DEBUG:
+                        print(f"CPU stopped (STOP)")
                 case 1: setde(fetch16())                
                 case 2: mem[getde()] = a                
                 case 3: setde(add(getde(), 1))
@@ -465,7 +612,7 @@ def execOpc(opcode):
                 case 3: mem[gethl()] = e
                 case 4: mem[gethl()] = h
                 case 5: mem[gethl()] = l
-                case 6: pass # implement later
+                case 6: halted = True
                 case 7: mem[gethl()] = a
                 case 8: a = b
                 case 9: a = c
@@ -559,13 +706,14 @@ def execOpc(opcode):
                 case 3: pc = fetch16()
                 case 4:
                     if not isFlag(0x80):
+                        addr = fetch16()
                         push16(pc)
                         pc = addr
                 case 5: push16(getbc())
                 case 6: a = add(a, fetch8())
                 case 7:
                     push16(pc)
-                    pc = 0
+                    pc = 0x00
                 case 8:
                     if isFlag(0x80):
                         pc = pop16()
@@ -573,18 +721,21 @@ def execOpc(opcode):
                 case 10:
                     if isFlag(0x80):
                         pc = fetch16()
-                case 11: pass # implement later
+                case 11:
+                    pc += 1
+                    execOpcCB(mem[pc])
                 case 12:
                     if isFlag(0x80):
                         push16(pc)
                         pc = fetch16()
                 case 13:
+                    addr = fetch16()
                     push16(pc)
-                    pc = fetch16()
+                    pc = addr
                 case 14: a = adc(a, fetch8())
                 case 15:
                     push16(pc)
-                    pc = 1
+                    pc = 0x08
         case 13:
             match o1:
                 case 0: 
@@ -602,7 +753,7 @@ def execOpc(opcode):
                 case 6: a = sub(a, fetch8())
                 case 7:
                     push16(pc)
-                    pc = 2
+                    pc = 0x10
                 case 8:
                     if isFlag(0x01):
                         pc = pop16()
@@ -614,13 +765,10 @@ def execOpc(opcode):
                     if isFlag(0x01):
                         push16(pc)
                         pc = fetch16()
-                case 13:
-                    add(pc, 1)
-                    execOpcCB(mem[pc])
                 case 14: a = sbc(a, fetch8())
                 case 15:
                     push16(pc)
-                    pc = 3
+                    pc = 0x18
         case 14:
             match o1:
                 case 0: mem[fetch8()] = a
@@ -630,38 +778,38 @@ def execOpc(opcode):
                 case 6: a = and_(a, fetch8())
                 case 7:
                     push16(pc)
-                    pc = 4
+                    pc = 0x20
                 case 8: sp = add(sp, fetch8())
                 case 9: pc = gethl()
                 case 10: mem[fetch16()] = a
                 case 14: a = xor(a, fetch8())
                 case 15:
                     push16(pc)
-                    pc = 5
+                    pc = 0x28
         case 15:
             match o1:
                 case 0: a = mem[fetch8()]
                 case 1: setaf(pop16())
                 case 2: a = mem[c]
-                case 3: pass # implement later
+                case 3: ime = False
                 case 5: push16(getaf())
                 case 6: a = or_(a, fetch8())
                 case 7:
                     push16(pc)
-                    pc = 6
+                    pc = 0x30
                 case 8:
                     sp = add(sp, fetch8())
                     sethl(sp)
                 case 9: sp = gethl()
                 case 10: a = fetch16()
-                case 11: pass # implement later
+                case 11: ime = True
                 case 14: a = cp(a, fetch8())
                 case 15:
                     push16(pc)
-                    pc = 7
+                    pc = 0x38
     
     # increment pc
-    add(pc, 1)
+    pc += 1
 def execOpcCB(opcode):
     global a, f, b, c, d, e, h, l, pc, sp, mem, disp
     
@@ -961,14 +1109,14 @@ def execOpcCB(opcode):
                 case 15: a = set_(7, a)
 
     # increment pc
-    add(pc, 1)
+    pc += 1
 
 # screen
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Game Boy Emulator")
 
 # load rom
-loadRom("pokemon-red.gb")
+loadRom("tetris.gb")
 
 # main run loop
 run = True
@@ -978,12 +1126,22 @@ while run:
         # quit event
         if event.type == pygame.QUIT:
             run = False
+        
+        # joypad
+        getJP(event)
             
-    # run instructions
+    # execute cpu insts
     for _ in range(MC // 60):
-        execOpc(mem[pc])
+        updJoypad()
+        if not stopped:
+            hanInter()
+            if not halted:
+                execOpc(mem[pc])
+            for _ in range(4):
+                timerTick()
 
     # refresh rate
+    renderTiles()
     updScreen()
     pclock.tick(60)
 
