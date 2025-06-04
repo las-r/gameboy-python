@@ -1,7 +1,7 @@
 import pygame
 
 # made by las-r on github
-# v0.4
+# v0.5.1
 
 # unfinished!!! not functional yet
 
